@@ -4,8 +4,8 @@ import { v4 as uuid } from "uuid";
 import multer from "multer";
 import QRCode from "qrcode";
 
-
 const router = express.Router();
+
 /* ---------- MULTER ---------- */
 const storage = multer.diskStorage({
   destination: "uploads/orders",
@@ -14,7 +14,6 @@ const storage = multer.diskStorage({
   },
 });
 const upload = multer({ storage });
-
 
 /* ================= GET ORDERS ================= */
 router.get("/", async (req, res) => {
@@ -41,7 +40,7 @@ router.get("/", async (req, res) => {
 
 /* ================= CREATE ORDER ================= */
 router.post("/", async (req, res) => {
-  const { orderDate, customerName, salary, items } = req.body;
+  const { orderDate, customerName, salary, productQty, items } = req.body;
   const orderId = uuid();
   const conn = await db.getConnection();
 
@@ -54,15 +53,20 @@ router.post("/", async (req, res) => {
         "SELECT stock FROM materials WHERE id=? FOR UPDATE",
         [i.materialId]
       );
-      if (!mat || mat.stock < i.qty) throw new Error("Insufficient stock");
+      if (!mat || mat.stock < i.qty) {
+        throw new Error("Insufficient stock");
+      }
     }
 
+    // insert order
     await conn.query(
-      `INSERT INTO orders (id, order_date, customer_name, salary, status)
-       VALUES (?, ?, ?, ?, 'PENDING')`,
-      [orderId, orderDate, customerName, salary || 0]
+      `INSERT INTO orders 
+       (id, order_date, customer_name, salary, product_qty, status)
+       VALUES (?, ?, ?, ?, ?, 'PENDING')`,
+      [orderId, orderDate, customerName, salary || 0, productQty || 0]
     );
 
+    // insert materials + deduct stock
     for (const i of items) {
       await conn.query(
         `INSERT INTO order_items
@@ -87,9 +91,9 @@ router.post("/", async (req, res) => {
   }
 });
 
-/* ================= UPDATE ORDER (EDIT) ================= */
+/* ================= UPDATE ORDER ================= */
 router.put("/:id", async (req, res) => {
-  const { orderDate, customerName, salary, items } = req.body;
+  const { orderDate, customerName, salary, productQty, items } = req.body;
   const conn = await db.getConnection();
 
   try {
@@ -118,15 +122,17 @@ router.put("/:id", async (req, res) => {
         "SELECT stock FROM materials WHERE id=? FOR UPDATE",
         [i.materialId]
       );
-      if (!mat || mat.stock < i.qty) throw new Error("Insufficient stock");
+      if (!mat || mat.stock < i.qty) {
+        throw new Error("Insufficient stock");
+      }
     }
 
     // update order
     await conn.query(
       `UPDATE orders 
-       SET order_date=?, customer_name=?, salary=?
+       SET order_date=?, customer_name=?, salary=?, product_qty=?
        WHERE id=?`,
-      [orderDate, customerName, salary || 0, req.params.id]
+      [orderDate, customerName, salary || 0, productQty || 0, req.params.id]
     );
 
     // insert new items
@@ -155,7 +161,6 @@ router.put("/:id", async (req, res) => {
 });
 
 /* ================= COMPLETE ORDER ================= */
-/* ================= COMPLETE ORDER ================= */
 router.post(
   "/:id/complete",
   upload.array("images"),
@@ -181,7 +186,7 @@ router.post(
         `UPDATE orders
          SET status='COMPLETED', product_count=?
          WHERE id=?`,
-        [productCount, req.params.id]
+        [productCount || 0, req.params.id]
       );
 
       await conn.commit();
@@ -229,7 +234,7 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-// GET ONLY COMPLETED ORDERS
+/* ================= COMPLETED ORDERS ================= */
 router.get("/completed", async (req, res) => {
   const [orders] = await db.query(
     "SELECT * FROM orders WHERE status='COMPLETED' ORDER BY created_at DESC"
@@ -252,12 +257,10 @@ router.get("/completed", async (req, res) => {
   res.json(orders);
 });
 
-
-/* ===== GENERATE ORDER QR ===== */
+/* ================= ORDER QR ================= */
 router.get("/:id/qr", async (req, res) => {
   const orderId = req.params.id;
 
-  // you can encode anything (order id, URL, JSON)
   const qrData = JSON.stringify({
     orderId,
     type: "ORDER",
@@ -266,10 +269,44 @@ router.get("/:id/qr", async (req, res) => {
   try {
     const qr = await QRCode.toDataURL(qrData);
     res.json({ qr });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "QR generation failed" });
   }
 });
 
+/* ================= BULK SAREE QR ================= */
+router.get("/:id/saree-qr", async (req, res) => {
+  const orderId = req.params.id;
+
+  try {
+    const [[order]] = await db.query(
+      "SELECT customer_name, order_date, product_count FROM orders WHERE id=?",
+      [orderId]
+    );
+
+    if (!order || !order.product_count) {
+      return res.status(400).json({ error: "Invalid saree count" });
+    }
+
+    const qrs = [];
+
+    for (let i = 1; i <= order.product_count; i++) {
+      const qrData = JSON.stringify({
+        orderId,
+        sareeNo: i,
+        total: order.product_count,
+        customer: order.customer_name,
+        date: order.order_date,
+      });
+
+      const qr = await QRCode.toDataURL(qrData);
+      qrs.push(qr);
+    }
+
+    res.json({ qrs });
+  } catch (err) {
+    res.status(500).json({ error: "QR generation failed" });
+  }
+});
 
 export default router;
