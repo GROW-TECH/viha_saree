@@ -309,4 +309,25 @@ router.get("/:id/saree-qr", async (req, res) => {
   }
 });
 
+router.post("/orders/mark-delivered", async (req, res) => {
+  const { orderId } = req.body; // Extract the order ID from the request body
+
+  try {
+    // Query your database to update the order status to "DELIVERED"
+    const result = await db.query("UPDATE orders SET status = 'DELIVERED' WHERE id = ?", [orderId]);
+    
+    // If the order was successfully updated, return a success response
+    if (result.affectedRows > 0) {
+      res.json({ success: true });
+    } else {
+      // If no rows were affected, return an error response
+      res.status(400).json({ error: "Order not found or already delivered." });
+    }
+  } catch (err) {
+    // Handle any errors that occur during the process
+    res.status(500).json({ error: "Error updating the order status." });
+  }
+});
+
+
 export default router;
